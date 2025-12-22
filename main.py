@@ -4,7 +4,7 @@ from pydantic import BaseModel
 from sudachipy import tokenizer, dictionary
 import jaconv
 import re
-from typing import List, Optional
+from typing import List, Optional, Union  # 修改点：增加了 Union
 
 app = FastAPI()
 
@@ -42,6 +42,19 @@ class TokenData(BaseModel):
 # 定义 JSON 接口的返回结构
 class AnalysisResponse(BaseModel):
     results: List[TokenData]
+
+# --- 新增模型：用于批量字幕处理 ---
+class SubtitleItem(BaseModel):
+    id: Union[str, int, float]  # ID可以是时间戳(int/float)或字符串
+    text: str
+
+class BatchSubtitleRequest(BaseModel):
+    sentences: List[SubtitleItem]
+
+class BatchSubtitleResponse(BaseModel):
+    id: Union[str, int, float]
+    html: str
+# -------------------------------
 
 
 # --- 3. 核心逻辑：仅做分析，不拼接 HTML ---
@@ -97,6 +110,21 @@ def analyze_text_logic(text: str) -> List[TokenData]:
     return results
 
 
+# --- 新增辅助函数：提取原本在 api_furigana 里的 HTML 拼接逻辑 ---
+def build_html_from_tokens(tokens: List[TokenData]) -> str:
+    html_output = ""
+    for t in tokens:
+        # 如果有 kanji_base 且它和 surface 不一样（或者有注音），说明需要生成 ruby
+        if t.kanji_base and t.furigana:
+             # 格式: <ruby>食<rt>た</rt></ruby>べ
+             html_output += f"<ruby>{t.kanji_base}<rt>{t.furigana}</rt></ruby>{t.okurigana}"
+        else:
+             # 纯假名或标点
+             html_output += t.surface
+    return html_output
+# -----------------------------------------------------------
+
+
 # --- 4. 接口定义 ---
 
 # 新接口：返回 JSON 数据
@@ -118,20 +146,39 @@ async def api_furigana(req: FuriganaRequest):
         return {"html": ""}
     try:
         tokens = analyze_text_logic(req.text)
-        html_output = ""
         
-        for t in tokens:
-            # 如果有 kanji_base 且它和 surface 不一样（或者有注音），说明需要生成 ruby
-            if t.kanji_base and t.furigana:
-                 # 格式: <ruby>食<rt>た</rt></ruby>べ
-                 html_output += f"<ruby>{t.kanji_base}<rt>{t.furigana}</rt></ruby>{t.okurigana}"
-            else:
-                 # 纯假名或标点
-                 html_output += t.surface
+        # 修改：这里改为调用公共辅助函数，逻辑与原来保持一致
+        html_output = build_html_from_tokens(tokens)
                  
         return {"html": html_output}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+# --- 新接口：批量处理字幕 ---
+# 地址：/process_batch
+# 说明：专门为 Chrome 插件设计，一次请求处理多行，减少网络开销
+@app.post("/process_batch", response_model=List[BatchSubtitleResponse])
+async def api_process_batch(req: BatchSubtitleRequest):
+    results = []
+    try:
+        for item in req.sentences:
+            if not item.text:
+                continue
+            
+            # 1. 分析
+            tokens = analyze_text_logic(item.text)
+            # 2. 生成 HTML
+            html_output = build_html_from_tokens(tokens)
+            
+            # 3. 添加到结果列表
+            results.append(BatchSubtitleResponse(
+                id=item.id,
+                html=html_output
+            ))
+        return results
+    except Exception as e:
+        print(f"Batch Error: {e}")
+        raise HTTPException(status_code=500, detail="Batch processing failed")
 
 if __name__ == "__main__":
     import uvicorn
