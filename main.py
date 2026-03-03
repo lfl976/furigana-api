@@ -61,7 +61,6 @@ class BatchSubtitleResponse(BaseModel):
 def analyze_text_logic(text: str) -> List[TokenData]:
     tokens = tokenizer_obj.tokenize(text, mode)
     results = []
-
     for token in tokens:
         surface = token.surface()       
         reading_kata = token.reading_form() 
@@ -179,6 +178,53 @@ async def api_process_batch(req: BatchSubtitleRequest):
     except Exception as e:
         print(f"Batch Error: {e}")
         raise HTTPException(status_code=500, detail="Batch processing failed")
+    
+# -------------------------------
+# 新接口：形态素分析（完整信息版）
+# -------------------------------
+
+class MorphToken(BaseModel):
+    surface: str              # 原词
+    dictionary_form: str      # 基本形
+    reading: str              # 读音
+    pos_major: str            # 词性大类（名詞 / 動詞 等）
+    part_of_speech: List[str] # 词性详细分类
+    conjugation_type: str     # 活用型
+    conjugation_form: str     # 活用形
+
+
+class MorphResponse(BaseModel):
+    results: List[MorphToken]
+
+
+@app.post("/morph", response_model=MorphResponse)
+async def api_morph(req: FuriganaRequest):
+    if not req.text:
+        return {"results": []}
+    try:
+        tokens = tokenizer_obj.tokenize(req.text, mode)
+        results = []
+
+        for token in tokens:
+            pos = token.part_of_speech()
+            results.append(
+                MorphToken(
+                    surface=token.surface(),
+                    dictionary_form=token.dictionary_form(),
+                    reading=jaconv.kata2hira(token.reading_form()),
+                    pos_major=pos[0] if len(pos) > 0 else "*",
+                    part_of_speech=pos,
+                    conjugation_type=pos[4] if len(pos) > 4 else "*",
+                    conjugation_form=pos[5] if len(pos) > 5 else "*",
+                )
+            )
+
+        return {"results": results}
+
+    except Exception as e:
+        print(f"Morph Error: {e}")
+        raise HTTPException(status_code=500, detail="Morph analysis failed")
+
 
 if __name__ == "__main__":
     import uvicorn
